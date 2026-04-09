@@ -7,7 +7,7 @@ A multi-threaded C++ program for testing raw ethernet packet transmission betwee
 - Sends and receives raw ethernet frames simultaneously using multi-threading
 - Configurable EtherType field (default: 0x88BF)
 - Optional VLAN tagging support (802.1Q)
-- Works on both macOS (using BPF) and Linux (using AF_PACKET)
+- Works on both macOS (using BPF) and (UNTESTED) Linux (using AF_PACKET)
 - Custom test packet format with sequence numbers and timestamps
 - Broadcast or unicast MAC addressing support
 
