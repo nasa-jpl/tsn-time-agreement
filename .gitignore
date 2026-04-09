@@ -2,9 +2,6 @@
 build/
 cmake-build-*/
 
-# Compiled binaries
-raw_packet_test
-
 # CMake generated files
 CMakeCache.txt
 CMakeFiles/
