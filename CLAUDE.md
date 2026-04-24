@@ -32,14 +32,14 @@ The tool requires root privileges to access raw sockets:
 sudo ./raw_packet_test <send_interface> <recv_interface> <dest_mac> [ethertype] [vlan_id] [count] [interval_ms]
 
 # Example with VLAN tagging
-sudo ./raw_packet_test en0 en1 ff:ff:ff:ff:ff:ff 0x88BF 100 20 1000
+sudo ./raw_packet_test eth0 eth1 ff:ff:ff:ff:ff:ff 0x88BF 100 20 1000
 ```
 
 ## Architecture
 
 ### Raw Packet Test Tool
 
-- **Platform Support**: macOS (using BPF) and Linux (using AF_PACKET, untested)
+- **Platform Support**: Linux (using AF_PACKET raw sockets)
 - **Threading Model**: Multi-threaded sender/receiver architecture
   - Receiver thread starts first and binds to the receive interface
   - After 500ms startup delay, sender thread begins transmission
@@ -48,6 +48,10 @@ sudo ./raw_packet_test en0 en1 ff:ff:ff:ff:ff:ff 0x88BF 100 20 1000
   - Optional 802.1Q VLAN tagging support
   - Includes sequence numbers and timestamps for testing
   - Non-VLAN packets: 90 bytes, VLAN-tagged: 94 bytes
+- **VLAN Handling**: Uses `PACKET_AUXDATA` and `recvmsg()` to access VLAN information
+  - Linux kernel typically strips VLAN tags and provides them via auxiliary data
+  - Tool handles both kernel-stripped and in-packet VLAN tags transparently
+  - Reports VLAN TCI (Tag Control Information) and TPID from `tpacket_auxdata`
 - **Key Feature**: Designed to detect packet duplication by processing all received packets within the timeout window
 
 ### Switch Configurations
