@@ -17,6 +17,10 @@ A multi-threaded C++ program for measuring packet latency between network interf
 
 [source,bash]
 ----
+# Initialize git submodules (required for cxxopts dependency)
+git submodule update --init --recursive
+
+# Build the project
 mkdir build
 cd build
 cmake ..

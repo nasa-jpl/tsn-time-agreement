@@ -181,14 +181,14 @@ bool attach_bpf_filter_exclude_mac(int sock, const unsigned char* mac) {
 }
 
 // Retrieve TX timestamp from error queue
-bool get_tx_timestamp(int sock, std::map<uint32_t, PacketTimestamp>& tx_timestamps) {
-    // Poll for error queue with 1ms timeout
+bool get_tx_timestamp(int sock, std::map<uint32_t, PacketTimestamp>& tx_timestamps, int timeout_ms) {
+    // Poll for error queue with specified timeout
     struct pollfd pfd;
     pfd.fd = sock;
     pfd.events = POLLERR;
     pfd.revents = 0;
 
-    int ret = poll(&pfd, 1, 1);  // 1ms timeout
+    int ret = poll(&pfd, 1, timeout_ms);
     if (ret <= 0) {
         return false;  // Timeout or error
     }
@@ -249,12 +249,12 @@ bool get_tx_timestamp(int sock, std::map<uint32_t, PacketTimestamp>& tx_timestam
             if (has_hw) {
                 ts.timestamp = ts_array[2];
                 ts.is_hardware = true;
-                std::cout << "[SEND] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (HW): " << ts_array[2].tv_sec << "."
+                std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (HW): " << ts_array[2].tv_sec << "."
                           << ts_array[2].tv_nsec << std::endl;
             } else if (has_sw) {
                 ts.timestamp = ts_array[0];
                 ts.is_hardware = false;
-                std::cout << "[SEND] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (SW): " << ts_array[0].tv_sec << "."
+                std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (SW): " << ts_array[0].tv_sec << "."
                           << ts_array[0].tv_nsec << std::endl;
             } else {
                 return false;
@@ -266,6 +266,36 @@ bool get_tx_timestamp(int sock, std::map<uint32_t, PacketTimestamp>& tx_timestam
     }
 
     return false;
+}
+
+// Thread to continuously drain TX timestamps from error queue
+void tx_timestamp_thread(int sock, int expected_count, std::map<uint32_t, PacketTimestamp>& tx_timestamps) {
+    std::cout << "[TSTAMP] TX timestamp collection thread started" << std::endl;
+
+    int no_timestamp_count = 0;
+    const int max_no_timestamp = 2000;  // Exit after 2000 * 1ms = 2 seconds with no timestamps
+
+    while (running && no_timestamp_count < max_no_timestamp) {
+        // Check if we've collected all expected timestamps
+        if ((int)tx_timestamps.size() >= expected_count) {
+            std::cout << "[TSTAMP] Collected all " << expected_count << " TX timestamps" << std::endl;
+            break;
+        }
+
+        // Try to get a timestamp with 1ms timeout for fast polling
+        if (get_tx_timestamp(sock, tx_timestamps, 1)) {
+            no_timestamp_count = 0;  // Reset counter on success
+        } else {
+            no_timestamp_count++;
+            // Don't sleep - loop immediately to poll as fast as possible
+        }
+    }
+
+    if (no_timestamp_count >= max_no_timestamp) {
+        std::cout << "[TSTAMP] TX timestamp collection timed out. Collected " << tx_timestamps.size() << "/" << expected_count << std::endl;
+    }
+
+    std::cout << "[TSTAMP] TX timestamp collection thread finished" << std::endl;
 }
 
 // Sender thread function
@@ -314,6 +344,12 @@ void sender_thread(const char* ifname,
         return;
     }
 
+    // Increase socket error queue size to prevent timestamp drops at high rates
+    int sndbuf = 1024 * 1024;  // 1MB send buffer
+    if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+        std::cerr << "[SEND] Warning: Failed to increase send buffer: " << strerror(errno) << std::endl;
+    }
+
     // Enable transmit timestamping (both hardware and software)
     // The kernel will use hardware if available, otherwise fall back to software
     int timestamping_flags = SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_SOFTWARE |
@@ -326,6 +362,9 @@ void sender_thread(const char* ifname,
 
     std::cout << "[SEND] Starting to send " << count << " packets on " << ifname << " (VLAN " << vlan_id << ")"
               << std::endl;
+
+    // Start TX timestamp collection thread
+    std::thread tx_ts_thread(tx_timestamp_thread, sock, count, std::ref(tx_timestamps));
 
     // Send packets (always VLAN-tagged)
     for (int i = 0; i < count && running; i++) {
@@ -365,13 +404,17 @@ void sender_thread(const char* ifname,
             std::cerr << "[SEND] Failed to send packet " << i << std::endl;
         } else {
             std::cout << "[SEND] Sent packet #" << i << " (" << sent << " bytes)" << std::endl;
-
-            // Try to retrieve TX timestamp from error queue
-            get_tx_timestamp(sock, tx_timestamps);
         }
 
         usleep(interval_ms * 1000);
     }
+
+    std::cout << "[SEND] All packets sent, waiting for TX timestamp collection to complete..." << std::endl;
+
+    // Wait for TX timestamp thread to finish collecting timestamps
+    tx_ts_thread.join();
+
+    std::cout << "[SEND] Collected " << tx_timestamps.size() << "/" << count << " TX timestamps" << std::endl;
 
     close(sock);
     std::cout << "[SEND] Sender thread finished" << std::endl;
