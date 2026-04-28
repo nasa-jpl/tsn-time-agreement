@@ -272,27 +272,108 @@ bool get_tx_timestamp(int sock, std::map<uint32_t, PacketTimestamp>& tx_timestam
 void tx_timestamp_thread(int sock, int expected_count, std::map<uint32_t, PacketTimestamp>& tx_timestamps) {
     std::cout << "[TSTAMP] TX timestamp collection thread started" << std::endl;
 
-    int no_timestamp_count = 0;
-    const int max_no_timestamp = 2000;  // Exit after 2000 * 1ms = 2 seconds with no timestamps
+    int consecutive_failures = 0;
+    const int max_consecutive_failures = 2000;  // Exit after 2000 consecutive failures
+    int drain_counter = 0;
 
-    while (running && no_timestamp_count < max_no_timestamp) {
+    while (running && consecutive_failures < max_consecutive_failures) {
         // Check if we've collected all expected timestamps
         if ((int)tx_timestamps.size() >= expected_count) {
             std::cout << "[TSTAMP] Collected all " << expected_count << " TX timestamps" << std::endl;
             break;
         }
 
-        // Try to get a timestamp with 1ms timeout for fast polling
-        if (get_tx_timestamp(sock, tx_timestamps, 1)) {
-            no_timestamp_count = 0;  // Reset counter on success
+        // Drain the regular receive buffer to prevent it from filling up
+        // (sender socket may receive packets if send_interface == recv_interface)
+        // Do this every iteration to prevent buffer buildup
+        char discard[2048];
+        while (recv(sock, discard, sizeof(discard), MSG_DONTWAIT) > 0) {
+            drain_counter++;
+            // Keep draining until empty
+        }
+
+        // Continuously try to drain error queue without blocking
+        char control[512];
+        char data[2048];
+        struct msghdr msg;
+        struct iovec iov;
+
+        memset(&msg, 0, sizeof(msg));
+        iov.iov_base = data;
+        iov.iov_len = sizeof(data);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+
+        // Read from error queue (non-blocking)
+        ssize_t len = recvmsg(sock, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
+
+        if (len > 0) {
+            consecutive_failures = 0;  // Reset on success
+
+            // Extract sequence number and source ID
+            uint32_t seq_num = 0;
+            uint32_t src_id = 0;
+            if (len >= (ssize_t)(sizeof(struct ether_header) + sizeof(uint32_t) + sizeof(uint32_t))) {
+                unsigned char* packet_data = (unsigned char*)data;
+                uint16_t ether_type = ntohs(*(uint16_t*)(packet_data + 12));
+
+                if (ether_type == 0x8100) {
+                    seq_num = ntohl(*(uint32_t*)(packet_data + 18));
+                    src_id = ntohl(*(uint32_t*)(packet_data + 22));
+                }
+            }
+
+            // Parse control messages for timestamps
+            for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPING) {
+                    struct timespec* ts_array = (struct timespec*)CMSG_DATA(cmsg);
+                    bool has_hw = (ts_array[2].tv_sec != 0 || ts_array[2].tv_nsec != 0);
+                    bool has_sw = (ts_array[0].tv_sec != 0 || ts_array[0].tv_nsec != 0);
+
+                    PacketTimestamp ts;
+                    ts.sequence_number = seq_num;
+                    ts.source_id = src_id;
+
+                    if (has_hw) {
+                        ts.timestamp = ts_array[2];
+                        ts.is_hardware = true;
+                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (HW): "
+                                  << ts_array[2].tv_sec << "." << ts_array[2].tv_nsec << std::endl;
+                    } else if (has_sw) {
+                        ts.timestamp = ts_array[0];
+                        ts.is_hardware = false;
+                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (SW): "
+                                  << ts_array[0].tv_sec << "." << ts_array[0].tv_nsec << std::endl;
+                    }
+
+                    if (has_hw || has_sw) {
+                        tx_timestamps[seq_num] = ts;
+                    }
+                }
+            }
         } else {
-            no_timestamp_count++;
-            // Don't sleep - loop immediately to poll as fast as possible
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available, increment failure counter and sleep briefly
+                consecutive_failures++;
+                usleep(1000);  // 1ms sleep when no data
+            } else {
+                // Real error
+                std::cerr << "[TSTAMP] Error reading error queue: " << strerror(errno) << std::endl;
+                consecutive_failures++;
+                usleep(1000);
+            }
         }
     }
 
-    if (no_timestamp_count >= max_no_timestamp) {
-        std::cout << "[TSTAMP] TX timestamp collection timed out. Collected " << tx_timestamps.size() << "/" << expected_count << std::endl;
+    if (consecutive_failures >= max_consecutive_failures) {
+        std::cout << "[TSTAMP] TX timestamp collection timed out. Collected " << tx_timestamps.size()
+                  << "/" << expected_count << std::endl;
+    }
+
+    if (drain_counter > 0) {
+        std::cout << "[TSTAMP] Drained " << drain_counter << " packets from sender socket receive buffer" << std::endl;
     }
 
     std::cout << "[TSTAMP] TX timestamp collection thread finished" << std::endl;
@@ -344,10 +425,18 @@ void sender_thread(const char* ifname,
         return;
     }
 
-    // Increase socket error queue size to prevent timestamp drops at high rates
-    int sndbuf = 1024 * 1024;  // 1MB send buffer
+    // Increase socket buffers to prevent drops at high rates
+    // The sender socket may also receive packets if send_interface == recv_interface
+    int sndbuf = 8 * 1024 * 1024;  // 8MB send buffer
     if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
         std::cerr << "[SEND] Warning: Failed to increase send buffer: " << strerror(errno) << std::endl;
+    }
+
+    int rcvbuf = 8 * 1024 * 1024;  // 8MB receive buffer
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+        std::cerr << "[SEND] Warning: Failed to increase receive buffer: " << strerror(errno) << std::endl;
+    } else {
+        std::cout << "[SEND] Socket buffers increased (8MB each) to handle high packet rates" << std::endl;
     }
 
     // Enable transmit timestamping (both hardware and software)
