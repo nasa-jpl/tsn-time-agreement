@@ -124,8 +124,8 @@ bool enable_hw_timestamping(const char* ifname) {
     ifr.ifr_data = (char*)&hwconfig;
 
     if (ioctl(sock, SIOCSHWTSTAMP, &ifr) < 0) {
-        std::cerr << "[TSTAMP] Failed to enable hardware timestamping on " << ifname
-                  << ": " << strerror(errno) << std::endl;
+        std::cerr << "[TSTAMP] Failed to enable hardware timestamping on " << ifname << ": " << strerror(errno)
+                  << std::endl;
         std::cerr << "[TSTAMP] This may mean the NIC driver doesn't support hardware timestamping" << std::endl;
         close(sock);
         return false;
@@ -249,13 +249,13 @@ bool get_tx_timestamp(int sock, std::map<uint32_t, PacketTimestamp>& tx_timestam
             if (has_hw) {
                 ts.timestamp = ts_array[2];
                 ts.is_hardware = true;
-                std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (HW): " << ts_array[2].tv_sec << "."
-                          << ts_array[2].tv_nsec << std::endl;
+                std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id
+                          << ") TX timestamp (HW): " << ts_array[2].tv_sec << "." << ts_array[2].tv_nsec << std::endl;
             } else if (has_sw) {
                 ts.timestamp = ts_array[0];
                 ts.is_hardware = false;
-                std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (SW): " << ts_array[0].tv_sec << "."
-                          << ts_array[0].tv_nsec << std::endl;
+                std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id
+                          << ") TX timestamp (SW): " << ts_array[0].tv_sec << "." << ts_array[0].tv_nsec << std::endl;
             } else {
                 return false;
             }
@@ -339,13 +339,15 @@ void tx_timestamp_thread(int sock, int expected_count, std::map<uint32_t, Packet
                     if (has_hw) {
                         ts.timestamp = ts_array[2];
                         ts.is_hardware = true;
-                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (HW): "
-                                  << ts_array[2].tv_sec << "." << ts_array[2].tv_nsec << std::endl;
+                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id
+                                  << ") TX timestamp (HW): " << ts_array[2].tv_sec << "." << ts_array[2].tv_nsec
+                                  << std::endl;
                     } else if (has_sw) {
                         ts.timestamp = ts_array[0];
                         ts.is_hardware = false;
-                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (SW): "
-                                  << ts_array[0].tv_sec << "." << ts_array[0].tv_nsec << std::endl;
+                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id
+                                  << ") TX timestamp (SW): " << ts_array[0].tv_sec << "." << ts_array[0].tv_nsec
+                                  << std::endl;
                     }
 
                     if (has_hw || has_sw) {
@@ -368,8 +370,8 @@ void tx_timestamp_thread(int sock, int expected_count, std::map<uint32_t, Packet
     }
 
     if (consecutive_failures >= max_consecutive_failures) {
-        std::cout << "[TSTAMP] TX timestamp collection timed out. Collected " << tx_timestamps.size()
-                  << "/" << expected_count << std::endl;
+        std::cout << "[TSTAMP] TX timestamp collection timed out. Collected " << tx_timestamps.size() << "/"
+                  << expected_count << std::endl;
     }
 
     if (drain_counter > 0) {
@@ -642,7 +644,8 @@ void receiver_thread(const char* ifname,
                     seq_num = ntohl(*(uint32_t*)(packet_data + 14));  // Sequence number after ethertype
                     src_id = ntohl(*(uint32_t*)(packet_data + 18));   // Source ID after sequence number
                     valid_packet = true;
-                    std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id << ") (kernel-stripped)" << std::endl;
+                    std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id
+                              << ") (kernel-stripped)" << std::endl;
                 }
             } else {
                 // VLAN still in packet (not stripped)
@@ -651,7 +654,8 @@ void receiver_thread(const char* ifname,
                     seq_num = ntohl(vlan_packet->sequence_number);
                     src_id = ntohl(vlan_packet->source_id);
                     valid_packet = true;
-                    std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id << ") (in-packet)" << std::endl;
+                    std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id << ") (in-packet)"
+                              << std::endl;
                 }
             }
 
@@ -688,7 +692,8 @@ void receiver_thread(const char* ifname,
 
 int main(int argc, char* argv[]) {
     try {
-        cxxopts::Options options("packet_latency_measurement", "Packet latency measurement tool with hardware timestamping support");
+        cxxopts::Options options("packet_latency_measurement",
+                                 "Packet latency measurement tool with hardware timestamping support");
 
         options.add_options()("s,send-interface", "Interface to send packets from", cxxopts::value<std::string>())(
             "r,recv-interface", "Interface to receive packets on", cxxopts::value<std::string>())(
@@ -719,7 +724,8 @@ int main(int argc, char* argv[]) {
 
         // Check required arguments
         if (!result.count("send-interface") || !result.count("recv-interface") || !result.count("source-id")) {
-            std::cerr << "Error: Missing required arguments (send-interface, recv-interface, and source-id)" << std::endl;
+            std::cerr << "Error: Missing required arguments (send-interface, recv-interface, and source-id)"
+                      << std::endl;
             std::cerr << "Run with --help for usage information" << std::endl;
             return 1;
         }
@@ -817,11 +823,12 @@ int main(int argc, char* argv[]) {
                 int64_t delta_nsec = rx_ts.timestamp.tv_nsec - tx_ts.timestamp.tv_nsec;
                 int64_t delta_ns = (delta_sec * 1000000000LL) + delta_nsec;
 
-                std::cout << "Packet #" << rx_ts.sequence_number << " (src=" << rx_ts.source_id << "): " << delta_ns << " ns"
-                          << " [TX=" << (tx_ts.is_hardware ? "HW" : "SW")
+                std::cout << "Packet #" << rx_ts.sequence_number << " (src=" << rx_ts.source_id << "): " << delta_ns
+                          << " ns" << " [TX=" << (tx_ts.is_hardware ? "HW" : "SW")
                           << ", RX=" << (rx_ts.is_hardware ? "HW" : "SW") << "]" << std::endl;
             } else {
-                std::cout << "Packet #" << rx_ts.sequence_number << " (src=" << rx_ts.source_id << "): No matching TX timestamp found" << std::endl;
+                std::cout << "Packet #" << rx_ts.sequence_number << " (src=" << rx_ts.source_id
+                          << "): No matching TX timestamp found" << std::endl;
             }
         }
 
@@ -836,15 +843,15 @@ int main(int argc, char* argv[]) {
                 for (const auto& tx_pair : tx_timestamps) {
                     const PacketTimestamp& tx_ts = tx_pair.second;
                     csv << "TX," << send_interface << "," << tx_ts.sequence_number << "," << tx_ts.source_id << ","
-                        << tx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0') << tx_ts.timestamp.tv_nsec << ","
-                        << (tx_ts.is_hardware ? "HW" : "SW") << std::endl;
+                        << tx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0') << tx_ts.timestamp.tv_nsec
+                        << "," << (tx_ts.is_hardware ? "HW" : "SW") << std::endl;
                 }
 
                 // Write RX timestamps
                 for (const auto& rx_ts : rx_timestamps) {
                     csv << "RX," << recv_interface << "," << rx_ts.sequence_number << "," << rx_ts.source_id << ","
-                        << rx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0') << rx_ts.timestamp.tv_nsec << ","
-                        << (rx_ts.is_hardware ? "HW" : "SW") << std::endl;
+                        << rx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0') << rx_ts.timestamp.tv_nsec
+                        << "," << (rx_ts.is_hardware ? "HW" : "SW") << std::endl;
                 }
 
                 csv.close();
