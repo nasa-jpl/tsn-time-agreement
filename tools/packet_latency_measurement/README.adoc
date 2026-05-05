@@ -5,6 +5,7 @@ A multi-threaded C++ program for measuring packet latency between network interf
 == Features
 
 * Hardware timestamping support for accurate latency measurements
+* Object-oriented class-based design for reusability and extensibility
 * Sends and receives raw ethernet frames simultaneously using multi-threading
 * Fixed EtherType: 0x88BF (configurable at compile time)
 * Always uses VLAN tagging (802.1Q)
@@ -12,6 +13,31 @@ A multi-threaded C++ program for measuring packet latency between network interf
 * Custom test packet format with sequence numbers, source IDs, and timestamps
 * CSV output for post-processing latency analysis
 * Broadcast or unicast MAC addressing support
+* Dedicated TX timestamp collection thread for reliable timestamp capture at high packet rates
+
+== Code Structure
+
+The tool is organized using an object-oriented design for modularity and reusability:
+
+[source]
+----
+packet_latency_measurement/
+├── main.cpp                 - Main entry point and CLI argument parsing
+├── packet_sender.h/cpp      - PacketSender class (sends packets, collects TX timestamps)
+├── packet_receiver.h/cpp    - PacketReceiver class (receives packets, collects RX timestamps)
+├── network_utils.h/cpp      - Network utility functions (MAC address, timestamping setup)
+├── packet_common.h          - Shared data structures and constants
+├── CMakeLists.txt           - CMake build configuration
+└── external/cxxopts/        - Command-line parsing library (git submodule)
+----
+
+=== Key Classes
+
+* *PacketSender*: Encapsulates sending packets and collecting TX timestamps. Runs a dedicated background thread that continuously drains the socket error queue to capture all TX timestamps, even at high packet rates (100Hz+).
+
+* *PacketReceiver*: Encapsulates receiving packets and collecting RX timestamps. Uses BPF filtering to exclude packets from its own MAC address.
+
+* *Network utilities*: Helper functions for MAC address lookup, interface index retrieval, hardware timestamping configuration, and BPF filter attachment.
 
 == Building
 
@@ -95,11 +121,18 @@ sudo ./packet_latency_measurement -s enp30s0 -r enp30s0 --source-id 2 -o instanc
 
 == How It Works
 
-1. The receiver thread starts first and binds to the receive interface
-2. After a 500ms startup delay, the sender thread starts sending packets
-3. Both threads run concurrently:
-   * *Sender*: Constructs VLAN-tagged ethernet frames with EtherType 0x88BF, sends them at the specified interval, and captures TX hardware timestamps
-   * *Receiver*: Listens for incoming VLAN-tagged frames with EtherType 0x88BF and captures RX hardware timestamps
+1. A `PacketReceiver` instance is created and started in a separate thread
+2. After a 500ms startup delay, a `PacketSender` instance sends packets in the main thread
+3. Both sender and receiver run concurrently:
+   * *PacketSender*:
+     ** Constructs VLAN-tagged ethernet frames with EtherType 0x88BF
+     ** Sends packets at the specified interval
+     ** Spawns a dedicated thread that continuously drains the socket error queue to collect TX timestamps
+     ** Drops all incoming packets on the sender socket (via BPF filter) to prevent buffer interference
+   * *PacketReceiver*:
+     ** Listens for incoming VLAN-tagged frames with EtherType 0x88BF
+     ** Captures RX hardware timestamps from control messages
+     ** Filters out packets from its own MAC address (via BPF filter)
 4. The receiver runs for a calculated time period: `500ms + (count × interval_ms) + 2000ms`
    * This allows it to catch all sent packets plus any duplicates or delayed packets
    * The program exits when the receiver's time expires
@@ -109,9 +142,17 @@ sudo ./packet_latency_measurement -s enp30s0 -r enp30s0 --source-id 2 -o instanc
 
 The tool enables hardware timestamping on both send and receive interfaces:
 
-* *TX timestamps*: Retrieved from the socket error queue after packet transmission
+* *TX timestamps*: Retrieved from the socket error queue by a dedicated collection thread that continuously polls with minimal latency (1ms). This ensures all timestamps are captured even at high packet rates (100Hz+).
 * *RX timestamps*: Retrieved from ancillary data in `recvmsg()` control messages
 * Falls back to software timestamps if hardware timestamping is unavailable
+
+=== High Packet Rate Support
+
+At high packet rates (100Hz = 10ms interval), the tool uses several techniques to prevent timestamp loss:
+
+* *Dedicated TX timestamp thread*: Continuously drains the error queue without blocking the sender
+* *Buffer management*: Increases socket buffers to 8MB and drains incoming packets on the sender socket to prevent the receive buffer from interfering with the error queue
+* *Non-blocking operations*: Uses `MSG_DONTWAIT` for minimal latency when reading timestamps
 
 === Handling Packet Duplicates
 
@@ -177,6 +218,15 @@ All packets are VLAN-tagged (802.1Q):
 ** Handles both kernel-stripped and in-packet VLAN tags transparently
 ** BPF filter attached to prevent receiving own packets (filters by source MAC)
 
+=== Source MAC Address Considerations
+
+Many NICs filter packets with "suspicious" source MAC addresses at the hardware/driver level before they reach the kernel:
+
+* *Avoid source MACs with too many zeros*: MACs like `00:00:00:00:00:03` or even `02:00:00:00:00:03` may be filtered
+* *Use realistic MACs*: Best practice is to use MACs that match your NIC vendor OUI (first 3 bytes) or use well-formed locally-administered addresses
+* *Example*: If your NIC is `24:5e:be:xx:xx:xx`, use test MACs like `24:5e:be:aa:bb:cc`
+* *Symptom*: tcpdump sees the packets (promiscuous mode bypasses filters) but application sockets don't receive them
+
 === VLAN Tag Handling
 
 The Linux kernel typically strips VLAN tags from incoming packets and provides them via auxiliary data. This tool:
@@ -196,3 +246,34 @@ Hardware timestamping requires:
 * TX timestamps are retrieved from the socket error queue using `MSG_ERRQUEUE`
 * RX timestamps are retrieved from `SO_TIMESTAMPING` control messages
 * If hardware timestamps are unavailable, software timestamps are used as fallback
+
+== Extending the Code
+
+The object-oriented design makes it easy to extend the tool:
+
+=== Adding New Packet Formats
+
+Modify `packet_common.h` to add new packet structures, then extend `PacketSender` and `PacketReceiver` classes to handle them.
+
+=== Reusing Components
+
+The classes can be instantiated independently:
+
+[source,cpp]
+----
+// Send-only application
+PacketSender sender("eth0", dest_mac, vlan_id, source_id);
+sender.send(100, 10);  // Send 100 packets at 10ms intervals
+
+// Receive-only application
+PacketReceiver receiver("eth1", vlan_id);
+receiver.receive(5000);  // Receive for 5 seconds
+----
+
+=== Creating Custom Tools
+
+Build custom measurement tools by combining the classes:
+
+* Create a multi-sender tool for performance testing
+* Build a packet analyzer that only receives and logs
+* Implement different timing models or protocols

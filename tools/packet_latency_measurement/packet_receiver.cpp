@@ -1,0 +1,215 @@
+#include "packet_receiver.h"
+
+#include <arpa/inet.h>
+#include <linux/if_packet.h>
+#include <linux/net_tstamp.h>
+#include <netinet/if_ether.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#include <iostream>
+
+#include "network_utils.h"
+
+PacketReceiver::PacketReceiver(const std::string& interface, uint16_t vlan_id)
+    : interface_(interface), vlan_id_(vlan_id), sock_(-1), should_stop_(false) {}
+
+PacketReceiver::~PacketReceiver() {
+    if (sock_ >= 0) {
+        close(sock_);
+    }
+}
+
+bool PacketReceiver::createSocket() {
+    // Use Linux AF_PACKET
+    sock_ = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+    if (sock_ < 0) {
+        std::cerr << "[RECV] Failed to create socket. Run with sudo?" << std::endl;
+        return false;
+    }
+
+    // Bind to interface
+    struct sockaddr_ll saddr;
+    memset(&saddr, 0, sizeof(saddr));
+    saddr.sll_family = AF_PACKET;
+    saddr.sll_protocol = htons(ETH_P_ALL);
+    saddr.sll_ifindex = get_interface_index(interface_.c_str());
+
+    if (bind(sock_, (struct sockaddr*)&saddr, sizeof(saddr)) < 0) {
+        std::cerr << "[RECV] Failed to bind socket" << std::endl;
+        close(sock_);
+        sock_ = -1;
+        return false;
+    }
+
+    // Enable hardware timestamping on the interface first (via ioctl)
+    enable_hw_timestamping(interface_.c_str());
+
+    // Enable auxiliary data to receive VLAN information
+    int val = 1;
+    if (setsockopt(sock_, SOL_PACKET, PACKET_AUXDATA, &val, sizeof(val)) < 0) {
+        std::cerr << "[RECV] Warning: Failed to enable PACKET_AUXDATA" << std::endl;
+    }
+
+    // Enable receive timestamping (both hardware and software)
+    int timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_RX_HARDWARE |
+                             SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
+    if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
+        std::cerr << "[RECV] Warning: Failed to enable RX timestamping: " << strerror(errno) << std::endl;
+    } else {
+        std::cout << "[RECV] RX timestamping enabled (HW+SW)" << std::endl;
+    }
+
+    // Attach BPF filter to drop packets from our own MAC (prevents local echo)
+    unsigned char recv_mac[6];
+    if (get_mac_address(interface_.c_str(), recv_mac)) {
+        attach_bpf_filter_exclude_mac(sock_, recv_mac);
+    } else {
+        std::cerr << "[RECV] Warning: Could not get interface MAC for BPF filter" << std::endl;
+    }
+
+    // Set read timeout to 100ms for more responsive timeout checking
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100000;  // 100ms
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    return true;
+}
+
+int PacketReceiver::receive(int duration_ms) {
+    if (!createSocket()) {
+        return 0;
+    }
+
+    char buffer[2048];
+    // Increase control buffer to hold both VLAN auxdata and timestamps
+    char control[CMSG_SPACE(sizeof(struct tpacket_auxdata)) + CMSG_SPACE(3 * sizeof(struct timespec))];
+    int received = 0;
+    uint64_t start_time_ms = get_time_ms();
+
+    std::cout << "[RECV] Listening on " << interface_ << " for test packets"
+              << " (VLAN " << vlan_id_ << ")"
+              << " for " << duration_ms << "ms..." << std::endl;
+
+    should_stop_ = false;
+
+    while (!should_stop_) {
+        // Check if total receive time has elapsed
+        uint64_t elapsed = get_time_ms() - start_time_ms;
+        if (elapsed >= (uint64_t)duration_ms) {
+            std::cout << "[RECV] Receive time expired (elapsed=" << elapsed << "ms) after receiving " << received
+                      << " packets" << std::endl;
+            break;
+        }
+
+        // Use recvmsg to get auxiliary data (VLAN info)
+        struct iovec iov;
+        iov.iov_base = buffer;
+        iov.iov_len = sizeof(buffer);
+
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+
+        ssize_t n = recvmsg(sock_, &msg, 0);
+
+        if (n > 0) {
+            unsigned char* packet_data = (unsigned char*)buffer;
+
+            // Extract VLAN info and timestamps from auxiliary data
+            bool vlan_stripped = false;
+            bool has_rx_timestamp = false;
+            struct timespec rx_timestamp_sw = {0, 0};
+            struct timespec rx_timestamp_hw = {0, 0};
+
+            for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                if (cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
+                    struct tpacket_auxdata* aux = (struct tpacket_auxdata*)CMSG_DATA(cmsg);
+                    if (aux->tp_vlan_tci != 0 || aux->tp_status & TP_STATUS_VLAN_VALID) {
+                        vlan_stripped = true;
+                    }
+                } else if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPING) {
+                    struct timespec* ts_array = (struct timespec*)CMSG_DATA(cmsg);
+                    // ts_array[0] = software timestamp
+                    // ts_array[1] = hardware timestamp (deprecated)
+                    // ts_array[2] = hardware timestamp (raw)
+
+                    if (ts_array[2].tv_sec != 0 || ts_array[2].tv_nsec != 0) {
+                        rx_timestamp_hw = ts_array[2];
+                        has_rx_timestamp = true;
+                    } else if (ts_array[0].tv_sec != 0 || ts_array[0].tv_nsec != 0) {
+                        rx_timestamp_sw = ts_array[0];
+                        has_rx_timestamp = true;
+                    }
+                }
+            }
+
+            // Always expecting VLAN-tagged packets
+            uint32_t seq_num = 0;
+            uint32_t src_id = 0;
+            bool valid_packet = false;
+
+            // Check if kernel stripped the VLAN tag
+            if (vlan_stripped) {
+                // VLAN was stripped, ethertype is now at offset 12
+                uint16_t ether_type = ntohs(*(uint16_t*)(packet_data + 12));
+
+                if (ether_type == TEST_ETHERTYPE) {
+                    seq_num = ntohl(*(uint32_t*)(packet_data + 14));  // Sequence number after ethertype
+                    src_id = ntohl(*(uint32_t*)(packet_data + 18));   // Source ID after sequence number
+                    valid_packet = true;
+                    std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id
+                              << ") (kernel-stripped)" << std::endl;
+                }
+            } else {
+                // VLAN still in packet (not stripped)
+                VlanTestPacket* vlan_packet = (VlanTestPacket*)packet_data;
+                if (ntohs(vlan_packet->vlan.tpid) == 0x8100 && ntohs(vlan_packet->ether_type) == TEST_ETHERTYPE) {
+                    seq_num = ntohl(vlan_packet->sequence_number);
+                    src_id = ntohl(vlan_packet->source_id);
+                    valid_packet = true;
+                    std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id << ") (in-packet)"
+                              << std::endl;
+                }
+            }
+
+            if (valid_packet) {
+                // Store RX timestamp
+                if (has_rx_timestamp) {
+                    PacketTimestamp ts;
+                    ts.sequence_number = seq_num;
+                    ts.source_id = src_id;
+
+                    if (rx_timestamp_hw.tv_sec != 0 || rx_timestamp_hw.tv_nsec != 0) {
+                        ts.timestamp = rx_timestamp_hw;
+                        ts.is_hardware = true;
+                        std::cout << "       RX timestamp (HW): " << rx_timestamp_hw.tv_sec << "."
+                                  << rx_timestamp_hw.tv_nsec << std::endl;
+                    } else {
+                        ts.timestamp = rx_timestamp_sw;
+                        ts.is_hardware = false;
+                        std::cout << "       RX timestamp (SW): " << rx_timestamp_sw.tv_sec << "."
+                                  << rx_timestamp_sw.tv_nsec << std::endl;
+                    }
+
+                    rx_timestamps_.push_back(ts);
+                }
+
+                received++;
+            }
+        }
+    }
+
+    std::cout << "[RECV] Receiver finished" << std::endl;
+    return received;
+}
+
+void PacketReceiver::stop() {
+    should_stop_ = true;
+}

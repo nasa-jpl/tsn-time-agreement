@@ -4,10 +4,29 @@ project(PacketLatencyMeasurement)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(packet_latency_measurement packet_latency_measurement.cpp)
+# Source files
+set(SOURCES
+    main.cpp
+    network_utils.cpp
+    packet_sender.cpp
+    packet_receiver.cpp
+)
+
+# Header files (for IDE integration)
+set(HEADERS
+    packet_common.h
+    network_utils.h
+    packet_sender.h
+    packet_receiver.h
+)
+
+add_executable(packet_latency_measurement ${SOURCES} ${HEADERS})
 
 # Add cxxopts include directory (header-only library)
-target_include_directories(packet_latency_measurement PRIVATE external/cxxopts/include)
+target_include_directories(packet_latency_measurement PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    external/cxxopts/include
+)
 
 # Link pthread library
 find_package(Threads REQUIRED)
