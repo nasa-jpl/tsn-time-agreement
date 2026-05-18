@@ -44,31 +44,42 @@ bool PacketReceiver::createSocket() {
         return false;
     }
 
-    // Enable hardware timestamping on the interface first (via ioctl)
-    enable_hw_timestamping(interface_.c_str());
+    // Enable hardware timestamping on the interface (non-fatal if it fails)
+    if (!enable_hw_timestamping(interface_.c_str())) {
+        std::cout << "[RECV] Hardware timestamping not available, will use software timestamps" << std::endl;
+    }
+
+    // Increase receive buffer to handle high packet rates
+    int rcvbuf = 8 * 1024 * 1024;  // 8MB
+    if (setsockopt(sock_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+        std::cerr << "[RECV] Warning: Failed to increase receive buffer: " << strerror(errno) << std::endl;
+    }
 
     // Enable auxiliary data to receive VLAN information
     int val = 1;
     if (setsockopt(sock_, SOL_PACKET, PACKET_AUXDATA, &val, sizeof(val)) < 0) {
-        std::cerr << "[RECV] Warning: Failed to enable PACKET_AUXDATA" << std::endl;
+        std::cerr << "[RECV] Warning: Failed to enable PACKET_AUXDATA: " << strerror(errno) << std::endl;
     }
 
     // Enable receive timestamping (both hardware and software)
     int timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_RX_HARDWARE |
                              SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
     if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
-        std::cerr << "[RECV] Warning: Failed to enable RX timestamping: " << strerror(errno) << std::endl;
+        std::cerr << "[RECV] Warning: Failed to enable HW timestamping: " << strerror(errno) << std::endl;
+        // Try software-only as fallback
+        timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
+        if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
+            std::cerr << "[RECV] Warning: Failed to enable SW timestamping: " << strerror(errno) << std::endl;
+        } else {
+            std::cout << "[RECV] RX timestamping enabled (SW only)" << std::endl;
+        }
     } else {
         std::cout << "[RECV] RX timestamping enabled (HW+SW)" << std::endl;
     }
 
-    // Attach BPF filter to drop packets from our own MAC (prevents local echo)
-    unsigned char recv_mac[6];
-    if (get_mac_address(interface_.c_str(), recv_mac)) {
-        attach_bpf_filter_exclude_mac(sock_, recv_mac);
-    } else {
-        std::cerr << "[RECV] Warning: Could not get interface MAC for BPF filter" << std::endl;
-    }
+    // Note: BPF filter disabled on this platform due to compatibility issues
+    // Packets are filtered by source_id in post-processing instead
+    std::cout << "[RECV] Note: BPF MAC filtering disabled (filter by source_id in CSV output)" << std::endl;
 
     // Set read timeout to 100ms for more responsive timeout checking
     struct timeval tv;
@@ -90,9 +101,8 @@ int PacketReceiver::receive(int duration_ms) {
     int received = 0;
     uint64_t start_time_ms = get_time_ms();
 
-    std::cout << "[RECV] Listening on " << interface_ << " for test packets"
-              << " (VLAN " << vlan_id_ << ")"
-              << " for " << duration_ms << "ms..." << std::endl;
+    std::cout << "[RECV] Listening on " << interface_ << " for test packets" << " (VLAN " << vlan_id_ << ")" << " for "
+              << duration_ms << "ms..." << std::endl;
 
     should_stop_ = false;
 

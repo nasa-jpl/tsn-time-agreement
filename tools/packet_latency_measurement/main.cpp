@@ -127,9 +127,21 @@ int main(int argc, char* argv[]) {
         std::cout << "TX timestamps collected: " << tx_timestamps.size() << std::endl;
         std::cout << "RX timestamps collected: " << rx_timestamps.size() << std::endl;
 
+        // Filter RX timestamps to exclude packets from our own source_id
+        std::vector<PacketTimestamp> filtered_rx_timestamps;
+        for (const auto& rx_ts : rx_timestamps) {
+            if (rx_ts.source_id != source_id) {
+                filtered_rx_timestamps.push_back(rx_ts);
+            }
+        }
+
+        std::cout << "\n=== Filtered Results ===" << std::endl;
+        std::cout << "RX timestamps from other sources: " << filtered_rx_timestamps.size() << std::endl;
+        std::cout << "RX timestamps filtered out (own source): " << (rx_timestamps.size() - filtered_rx_timestamps.size()) << std::endl;
+
         // Calculate and print deltas
         std::cout << "\n=== Timestamp Deltas (TX -> RX) ===" << std::endl;
-        for (const auto& rx_ts : rx_timestamps) {
+        for (const auto& rx_ts : filtered_rx_timestamps) {
             auto tx_it = tx_timestamps.find(rx_ts.sequence_number);
             if (tx_it != tx_timestamps.end() && tx_it->second.source_id == rx_ts.source_id) {
                 const PacketTimestamp& tx_ts = tx_it->second;
@@ -164,8 +176,8 @@ int main(int argc, char* argv[]) {
                         << tx_ts.timestamp.tv_nsec << "," << (tx_ts.is_hardware ? "HW" : "SW") << std::endl;
                 }
 
-                // Write RX timestamps
-                for (const auto& rx_ts : rx_timestamps) {
+                // Write RX timestamps (filtered to exclude our own source_id)
+                for (const auto& rx_ts : filtered_rx_timestamps) {
                     csv << "RX," << recv_interface << "," << rx_ts.sequence_number << "," << rx_ts.source_id << ","
                         << rx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0')
                         << rx_ts.timestamp.tv_nsec << "," << (rx_ts.is_hardware ? "HW" : "SW") << std::endl;

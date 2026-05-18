@@ -5,10 +5,7 @@ A multi-threaded C++ program for measuring packet latency between network interf
 == Features
 
 * Hardware timestamping support for accurate latency measurements
-* Object-oriented class-based design for reusability and extensibility
 * Sends and receives raw ethernet frames simultaneously using multi-threading
-* Fixed EtherType: 0x88BF (configurable at compile time)
-* Always uses VLAN tagging (802.1Q)
 * Works on Linux using AF_PACKET raw sockets
 * Custom test packet format with sequence numbers, source IDs, and timestamps
 * CSV output for post-processing latency analysis
@@ -16,8 +13,6 @@ A multi-threaded C++ program for measuring packet latency between network interf
 * Dedicated TX timestamp collection thread for reliable timestamp capture at high packet rates
 
 == Code Structure
-
-The tool is organized using an object-oriented design for modularity and reusability:
 
 [source]
 ----
@@ -108,7 +103,7 @@ With VLAN ID 10, 20 packets, 3 second interval, and CSV output:
 sudo ./packet_latency_measurement -s enp27s0 -r enp30s0 --source-id 1 -v 10 -c 20 -i 3000 -o timestamps.csv
 ----
 
-Bidirectional latency measurement (two instances on same interface):
+Bidirectional latency measurement (two instances running on separate interfaces):
 
 [source,bash]
 ----
@@ -145,6 +140,28 @@ The tool enables hardware timestamping on both send and receive interfaces:
 * *TX timestamps*: Retrieved from the socket error queue by a dedicated collection thread that continuously polls with minimal latency (1ms). This ensures all timestamps are captured even at high packet rates (100Hz+).
 * *RX timestamps*: Retrieved from ancillary data in `recvmsg()` control messages
 * Falls back to software timestamps if hardware timestamping is unavailable
+  ** To check if your NIC supports this, you can run `ethtool` and should see something like the following:
+
+[source,bash]
+----
+❯ sudo ethtool -T enp30s0
+Time stamping parameters for enp30s0:
+Capabilities:
+        hardware-transmit
+        software-transmit
+        hardware-receive
+        software-receive
+        software-system-clock
+        hardware-raw-clock
+PTP Hardware Clock: 9
+Hardware Transmit Timestamp Modes:
+        off
+        on
+Hardware Receive Filter Modes:
+        none
+        all
+----
+
 
 === High Packet Rate Support
 

@@ -32,9 +32,6 @@ PacketSender::~PacketSender() {
 }
 
 bool PacketSender::createSocket() {
-    // Enable hardware timestamping on the interface first (via ioctl)
-    enable_hw_timestamping(interface_.c_str());
-
     // Use Linux AF_PACKET
     sock_ = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (sock_ < 0) {
@@ -54,6 +51,11 @@ bool PacketSender::createSocket() {
         close(sock_);
         sock_ = -1;
         return false;
+    }
+
+    // Enable hardware timestamping on the interface (non-fatal if it fails)
+    if (!enable_hw_timestamping(interface_.c_str())) {
+        std::cout << "[SEND] Hardware timestamping not available, will use software timestamps" << std::endl;
     }
 
     // Attach BPF filter to DROP all incoming packets on sender socket
@@ -89,7 +91,14 @@ bool PacketSender::createSocket() {
     int timestamping_flags = SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_TX_HARDWARE |
                              SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
     if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
-        std::cerr << "[SEND] Warning: Failed to enable TX timestamping: " << strerror(errno) << std::endl;
+        std::cerr << "[SEND] Warning: Failed to enable HW timestamping: " << strerror(errno) << std::endl;
+        // Try software-only as fallback
+        timestamping_flags = SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
+        if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
+            std::cerr << "[SEND] Warning: Failed to enable SW timestamping: " << strerror(errno) << std::endl;
+        } else {
+            std::cout << "[SEND] TX timestamping enabled (SW only)" << std::endl;
+        }
     } else {
         std::cout << "[SEND] TX timestamping enabled (HW+SW)" << std::endl;
     }
