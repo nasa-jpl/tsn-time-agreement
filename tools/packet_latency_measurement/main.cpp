@@ -137,10 +137,10 @@ int main(int argc, char* argv[]) {
 
         std::cout << "\n=== Filtered Results ===" << std::endl;
         std::cout << "RX timestamps from other sources: " << filtered_rx_timestamps.size() << std::endl;
-        std::cout << "RX timestamps filtered out (own source): " << (rx_timestamps.size() - filtered_rx_timestamps.size()) << std::endl;
+        std::cout << "RX timestamps filtered out (own source): "
+                  << (rx_timestamps.size() - filtered_rx_timestamps.size()) << std::endl;
 
-        // Calculate and print deltas
-        std::cout << "\n=== Timestamp Deltas (TX -> RX) ===" << std::endl;
+        // Calculate deltas
         for (const auto& rx_ts : filtered_rx_timestamps) {
             auto tx_it = tx_timestamps.find(rx_ts.sequence_number);
             if (tx_it != tx_timestamps.end() && tx_it->second.source_id == rx_ts.source_id) {
@@ -150,14 +150,6 @@ int main(int argc, char* argv[]) {
                 int64_t delta_sec = rx_ts.timestamp.tv_sec - tx_ts.timestamp.tv_sec;
                 int64_t delta_nsec = rx_ts.timestamp.tv_nsec - tx_ts.timestamp.tv_nsec;
                 int64_t delta_ns = (delta_sec * 1000000000LL) + delta_nsec;
-
-                std::cout << "Packet #" << rx_ts.sequence_number << " (src=" << rx_ts.source_id << "): " << delta_ns
-                          << " ns"
-                          << " [TX=" << (tx_ts.is_hardware ? "HW" : "SW")
-                          << ", RX=" << (rx_ts.is_hardware ? "HW" : "SW") << "]" << std::endl;
-            } else {
-                std::cout << "Packet #" << rx_ts.sequence_number << " (src=" << rx_ts.source_id
-                          << "): No matching TX timestamp found" << std::endl;
             }
         }
 
@@ -172,15 +164,15 @@ int main(int argc, char* argv[]) {
                 for (const auto& tx_pair : tx_timestamps) {
                     const PacketTimestamp& tx_ts = tx_pair.second;
                     csv << "TX," << send_interface << "," << tx_ts.sequence_number << "," << tx_ts.source_id << ","
-                        << tx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0')
-                        << tx_ts.timestamp.tv_nsec << "," << (tx_ts.is_hardware ? "HW" : "SW") << std::endl;
+                        << tx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0') << tx_ts.timestamp.tv_nsec
+                        << "," << (tx_ts.is_hardware ? "HW" : "SW") << std::endl;
                 }
 
                 // Write RX timestamps (filtered to exclude our own source_id)
                 for (const auto& rx_ts : filtered_rx_timestamps) {
                     csv << "RX," << recv_interface << "," << rx_ts.sequence_number << "," << rx_ts.source_id << ","
-                        << rx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0')
-                        << rx_ts.timestamp.tv_nsec << "," << (rx_ts.is_hardware ? "HW" : "SW") << std::endl;
+                        << rx_ts.timestamp.tv_sec << "," << std::setw(9) << std::setfill('0') << rx_ts.timestamp.tv_nsec
+                        << "," << (rx_ts.is_hardware ? "HW" : "SW") << std::endl;
                 }
 
                 csv.close();

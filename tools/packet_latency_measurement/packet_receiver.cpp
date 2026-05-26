@@ -62,8 +62,8 @@ bool PacketReceiver::createSocket() {
     }
 
     // Enable receive timestamping (both hardware and software)
-    int timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_RX_HARDWARE |
-                             SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
+    int timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_SOFTWARE |
+                             SOF_TIMESTAMPING_RAW_HARDWARE;
     if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
         std::cerr << "[RECV] Warning: Failed to enable HW timestamping: " << strerror(errno) << std::endl;
         // Try software-only as fallback
@@ -174,8 +174,10 @@ int PacketReceiver::receive(int duration_ms) {
                     seq_num = ntohl(*(uint32_t*)(packet_data + 14));  // Sequence number after ethertype
                     src_id = ntohl(*(uint32_t*)(packet_data + 18));   // Source ID after sequence number
                     valid_packet = true;
+#ifdef _DEBUG
                     std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id
                               << ") (kernel-stripped)" << std::endl;
+#endif
                 }
             } else {
                 // VLAN still in packet (not stripped)
@@ -184,8 +186,10 @@ int PacketReceiver::receive(int duration_ms) {
                     seq_num = ntohl(vlan_packet->sequence_number);
                     src_id = ntohl(vlan_packet->source_id);
                     valid_packet = true;
+#ifdef _DEBUG
                     std::cout << "[RECV] Received VLAN packet #" << seq_num << " (src=" << src_id << ") (in-packet)"
                               << std::endl;
+#endif
                 }
             }
 
@@ -199,13 +203,17 @@ int PacketReceiver::receive(int duration_ms) {
                     if (rx_timestamp_hw.tv_sec != 0 || rx_timestamp_hw.tv_nsec != 0) {
                         ts.timestamp = rx_timestamp_hw;
                         ts.is_hardware = true;
+#ifdef _DEBUG
                         std::cout << "       RX timestamp (HW): " << rx_timestamp_hw.tv_sec << "."
                                   << rx_timestamp_hw.tv_nsec << std::endl;
+#endif
                     } else {
                         ts.timestamp = rx_timestamp_sw;
                         ts.is_hardware = false;
+#ifdef _DEBUG
                         std::cout << "       RX timestamp (SW): " << rx_timestamp_sw.tv_sec << "."
                                   << rx_timestamp_sw.tv_nsec << std::endl;
+#endif
                     }
 
                     rx_timestamps_.push_back(ts);
