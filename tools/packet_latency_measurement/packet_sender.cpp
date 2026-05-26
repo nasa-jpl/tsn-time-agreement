@@ -19,7 +19,9 @@
 
 #include "network_utils.h"
 
-PacketSender::PacketSender(const std::string& interface, const unsigned char* dest_mac, uint16_t vlan_id,
+PacketSender::PacketSender(const std::string& interface,
+                           const unsigned char* dest_mac,
+                           uint16_t vlan_id,
                            uint32_t source_id)
     : interface_(interface), vlan_id_(vlan_id), source_id_(source_id), sock_(-1), should_stop_(false) {
     memcpy(dest_mac_, dest_mac, 6);
@@ -88,8 +90,8 @@ bool PacketSender::createSocket() {
     }
 
     // Enable transmit timestamping (both hardware and software)
-    int timestamping_flags = SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_TX_HARDWARE |
-                             SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
+    int timestamping_flags = SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_SOFTWARE |
+                             SOF_TIMESTAMPING_RAW_HARDWARE;
     if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
         std::cerr << "[SEND] Warning: Failed to enable HW timestamping: " << strerror(errno) << std::endl;
         // Try software-only as fallback
@@ -174,13 +176,19 @@ void PacketSender::txTimestampCollectionThread(int expected_count) {
                     if (has_hw) {
                         ts.timestamp = ts_array[2];
                         ts.is_hardware = true;
-                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (HW): "
-                                  << ts_array[2].tv_sec << "." << ts_array[2].tv_nsec << std::endl;
+#ifdef _DEBUG
+                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id
+                                  << ") TX timestamp (HW): " << ts_array[2].tv_sec << "." << ts_array[2].tv_nsec
+                                  << std::endl;
+#endif
                     } else if (has_sw) {
                         ts.timestamp = ts_array[0];
                         ts.is_hardware = false;
-                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id << ") TX timestamp (SW): "
-                                  << ts_array[0].tv_sec << "." << ts_array[0].tv_nsec << std::endl;
+#ifdef _DEBUG
+                        std::cout << "[TSTAMP] Packet #" << seq_num << " (src=" << src_id
+                                  << ") TX timestamp (SW): " << ts_array[0].tv_sec << "." << ts_array[0].tv_nsec
+                                  << std::endl;
+#endif
                     }
 
                     if (has_hw || has_sw) {
@@ -193,7 +201,9 @@ void PacketSender::txTimestampCollectionThread(int expected_count) {
                 consecutive_failures++;
                 usleep(1000);  // 1ms sleep when no data
             } else {
+#ifdef _DEBUG
                 std::cerr << "[TSTAMP] Error reading error queue: " << strerror(errno) << std::endl;
+#endif
                 consecutive_failures++;
                 usleep(1000);
             }
@@ -206,8 +216,7 @@ void PacketSender::txTimestampCollectionThread(int expected_count) {
     }
 
     if (drain_counter > 0) {
-        std::cout << "[TSTAMP] Drained " << drain_counter << " packets from sender socket receive buffer"
-                  << std::endl;
+        std::cout << "[TSTAMP] Drained " << drain_counter << " packets from sender socket receive buffer" << std::endl;
     }
 
     std::cout << "[TSTAMP] TX timestamp collection thread finished" << std::endl;
@@ -252,7 +261,7 @@ int PacketSender::send(int count, int interval_ms) {
         memcpy(packet.ether_shost, src_mac, 6);
 
         // Fill VLAN header (802.1Q)
-        packet.vlan.tpid = htons(0x8100);           // VLAN tag identifier
+        packet.vlan.tpid = htons(0x8100);            // VLAN tag identifier
         packet.vlan.tci = htons(vlan_id_ & 0x0FFF);  // VLAN ID (12 bits), PCP=0, DEI=0
 
         // EtherType comes after VLAN tag
@@ -277,9 +286,13 @@ int PacketSender::send(int count, int interval_ms) {
         ssize_t sent = sendmsg(sock_, &msg, 0);
 
         if (sent < 0) {
+#ifdef _DEBUG
             std::cerr << "[SEND] Failed to send packet " << i << std::endl;
+#endif
         } else {
+#ifdef _DEBUG
             std::cout << "[SEND] Sent packet #" << i << " (" << sent << " bytes)" << std::endl;
+#endif
             sent_count++;
         }
 
