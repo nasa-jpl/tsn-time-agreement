@@ -23,7 +23,9 @@ int main(int argc, char* argv[]) {
             "source-id", "Source ID to include in packet payload (required)", cxxopts::value<uint32_t>())(
             "c,count", "Number of packets to send", cxxopts::value<int>()->default_value("10"))(
             "i,interval", "Delay between sent packets in milliseconds", cxxopts::value<int>()->default_value("500"))(
-            "o,output", "CSV file to write timestamp data", cxxopts::value<std::string>())("h,help", "Print usage");
+            "t,timeout", "Receive timeout in milliseconds after send completion",
+            cxxopts::value<int>()->default_value("2000"))("o,output", "CSV file to write timestamp data",
+                                                          cxxopts::value<std::string>())("h,help", "Print usage");
 
         options.parse_positional({"send-interface", "recv-interface"});
         options.positional_help("<send_interface> <recv_interface>");
@@ -58,6 +60,7 @@ int main(int argc, char* argv[]) {
         uint32_t source_id = result["source-id"].as<uint32_t>();
         int count = result["count"].as<int>();
         int interval_ms = result["interval"].as<int>();
+        int timeout_ms = result["timeout"].as<int>();
 
         std::string csv_file;
         if (result.count("output")) {
@@ -95,11 +98,11 @@ int main(int argc, char* argv[]) {
         std::cout << "Source ID: " << source_id << std::endl;
         std::cout << "Packet count: " << count << std::endl;
         std::cout << "Send interval: " << interval_ms << "ms" << std::endl;
-        std::cout << "Recv timeout: " << RECV_TIMEOUT_MS << "ms after send complete" << std::endl;
+        std::cout << "Recv timeout: " << timeout_ms << "ms after send complete" << std::endl;
 
         // Calculate total receive time: startup delay + send time + extra timeout
         int startup_delay_ms = 500;
-        int total_recv_time_ms = startup_delay_ms + (count * interval_ms) + RECV_TIMEOUT_MS;
+        int total_recv_time_ms = startup_delay_ms + (count * interval_ms) + timeout_ms;
         std::cout << "Total recv time: " << total_recv_time_ms << "ms" << std::endl;
         std::cout << "===================================" << std::endl << std::endl;
 
@@ -139,19 +142,6 @@ int main(int argc, char* argv[]) {
         std::cout << "RX timestamps from other sources: " << filtered_rx_timestamps.size() << std::endl;
         std::cout << "RX timestamps filtered out (own source): "
                   << (rx_timestamps.size() - filtered_rx_timestamps.size()) << std::endl;
-
-        // Calculate deltas
-        for (const auto& rx_ts : filtered_rx_timestamps) {
-            auto tx_it = tx_timestamps.find(rx_ts.sequence_number);
-            if (tx_it != tx_timestamps.end() && tx_it->second.source_id == rx_ts.source_id) {
-                const PacketTimestamp& tx_ts = tx_it->second;
-
-                // Calculate delta in nanoseconds
-                int64_t delta_sec = rx_ts.timestamp.tv_sec - tx_ts.timestamp.tv_sec;
-                int64_t delta_nsec = rx_ts.timestamp.tv_nsec - tx_ts.timestamp.tv_nsec;
-                int64_t delta_ns = (delta_sec * 1000000000LL) + delta_nsec;
-            }
-        }
 
         // Write to CSV file if specified
         if (!csv_file.empty()) {
