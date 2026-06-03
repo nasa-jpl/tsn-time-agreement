@@ -10,7 +10,8 @@
 
 class PacketSender {
    public:
-    PacketSender(const std::string& interface, const unsigned char* dest_mac, uint16_t vlan_id, uint32_t source_id);
+    PacketSender(const std::string& interface, const unsigned char* dest_mac, uint16_t vlan_id, uint32_t source_id,
+                 bool enable_timestamps = true);
     ~PacketSender();
 
     // Send packets with specified count and interval
@@ -28,6 +29,7 @@ class PacketSender {
     unsigned char dest_mac_[6];
     uint16_t vlan_id_;
     uint32_t source_id_;
+    bool enable_timestamps_;
 
     int sock_;
     std::map<uint32_t, PacketTimestamp> tx_timestamps_;

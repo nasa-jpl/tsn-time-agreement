@@ -9,7 +9,7 @@
 
 class PacketReceiver {
    public:
-    PacketReceiver(const std::string& interface, uint16_t vlan_id);
+    PacketReceiver(const std::string& interface, uint16_t vlan_id, bool enable_timestamps = true);
     ~PacketReceiver();
 
     // Receive packets for specified duration
@@ -25,6 +25,7 @@ class PacketReceiver {
    private:
     std::string interface_;
     uint16_t vlan_id_;
+    bool enable_timestamps_;
 
     int sock_;
     std::vector<PacketTimestamp> rx_timestamps_;

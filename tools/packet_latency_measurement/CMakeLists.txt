@@ -7,17 +7,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Source files
 set(SOURCES
     main.cpp
-    network_utils.cpp
-    packet_sender.cpp
-    packet_receiver.cpp
+    ../common/network_utils.cpp
+    ../common/packet_sender.cpp
+    ../common/packet_receiver.cpp
 )
 
 # Header files (for IDE integration)
 set(HEADERS
-    packet_common.h
-    network_utils.h
-    packet_sender.h
-    packet_receiver.h
+    ../common/packet_common.h
+    ../common/network_utils.h
+    ../common/packet_sender.h
+    ../common/packet_receiver.h
 )
 
 add_executable(packet_latency_measurement ${SOURCES} ${HEADERS})
@@ -25,6 +25,7 @@ add_executable(packet_latency_measurement ${SOURCES} ${HEADERS})
 # Add cxxopts include directory (header-only library)
 target_include_directories(packet_latency_measurement PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common
     external/cxxopts/include
 )
 
