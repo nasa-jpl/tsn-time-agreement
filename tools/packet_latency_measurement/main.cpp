@@ -24,8 +24,12 @@ int main(int argc, char* argv[]) {
             "c,count", "Number of packets to send", cxxopts::value<int>()->default_value("10"))(
             "i,interval", "Delay between sent packets in milliseconds", cxxopts::value<int>()->default_value("500"))(
             "t,timeout", "Receive timeout in milliseconds after send completion",
-            cxxopts::value<int>()->default_value("2000"))("o,output", "CSV file to write timestamp data",
-                                                          cxxopts::value<std::string>())("h,help", "Print usage");
+            cxxopts::value<int>()->default_value("2000"))(
+            "no-timestamps", "Disable timestamp collection")(
+            "txtime", "Enable SO_TXTIME for scheduled packet transmission")(
+            "txtime-clock", "Clock ID for SO_TXTIME (1=MONOTONIC, 11=TAI)", cxxopts::value<int>()->default_value("1"))(
+            "p,priority", "Socket priority (SO_PRIORITY) 0-7", cxxopts::value<int>()->default_value("0"))(
+            "o,output", "CSV file to write timestamp data", cxxopts::value<std::string>())("h,help", "Print usage");
 
         options.parse_positional({"send-interface", "recv-interface"});
         options.positional_help("<send_interface> <recv_interface>");
@@ -61,6 +65,10 @@ int main(int argc, char* argv[]) {
         int count = result["count"].as<int>();
         int interval_ms = result["interval"].as<int>();
         int timeout_ms = result["timeout"].as<int>();
+        bool enable_timestamps = !result.count("no-timestamps");
+        int priority = result["priority"].as<int>();
+        bool enable_txtime = result.count("txtime") > 0;
+        int txtime_clockid = result["txtime-clock"].as<int>();
 
         std::string csv_file;
         if (result.count("output")) {
@@ -73,6 +81,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         uint16_t vlan_id = (uint16_t)vlan_id_int;
+
+        // Validate priority
+        if (priority < 0 || priority > 7) {
+            std::cerr << "Invalid priority. Must be between 0 and 7." << std::endl;
+            return 1;
+        }
 
         // Parse destination MAC address
         unsigned char dest_mac[6];
@@ -99,6 +113,13 @@ int main(int argc, char* argv[]) {
         std::cout << "Packet count: " << count << std::endl;
         std::cout << "Send interval: " << interval_ms << "ms" << std::endl;
         std::cout << "Recv timeout: " << timeout_ms << "ms after send complete" << std::endl;
+        std::cout << "Timestamps: " << (enable_timestamps ? "enabled" : "disabled") << std::endl;
+        std::cout << "Priority: " << priority << std::endl;
+        std::cout << "SO_TXTIME: " << (enable_txtime ? "enabled" : "disabled");
+        if (enable_txtime) {
+            std::cout << " (clockid=" << txtime_clockid << ")";
+        }
+        std::cout << std::endl;
 
         // Calculate total receive time: startup delay + send time + extra timeout
         int startup_delay_ms = 500;
@@ -107,8 +128,9 @@ int main(int argc, char* argv[]) {
         std::cout << "===================================" << std::endl << std::endl;
 
         // Create sender and receiver
-        PacketSender sender(send_interface, dest_mac, vlan_id, source_id);
-        PacketReceiver receiver(recv_interface, vlan_id);
+        PacketSender sender(send_interface, dest_mac, vlan_id, source_id, enable_timestamps, priority, enable_txtime,
+                            txtime_clockid);
+        PacketReceiver receiver(recv_interface, vlan_id, enable_timestamps);
 
         // Start receiver in separate thread
         std::thread recv_thread([&receiver, total_recv_time_ms]() { receiver.receive(total_recv_time_ms); });

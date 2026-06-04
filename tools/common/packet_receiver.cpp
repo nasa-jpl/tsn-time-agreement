@@ -13,8 +13,8 @@
 
 #include "network_utils.h"
 
-PacketReceiver::PacketReceiver(const std::string& interface, uint16_t vlan_id)
-    : interface_(interface), vlan_id_(vlan_id), sock_(-1), should_stop_(false) {}
+PacketReceiver::PacketReceiver(const std::string& interface, uint16_t vlan_id, bool enable_timestamps)
+    : interface_(interface), vlan_id_(vlan_id), enable_timestamps_(enable_timestamps), sock_(-1), should_stop_(false) {}
 
 PacketReceiver::~PacketReceiver() {
     if (sock_ >= 0) {
@@ -44,42 +44,46 @@ bool PacketReceiver::createSocket() {
         return false;
     }
 
-    // Enable hardware timestamping on the interface (non-fatal if it fails)
-    if (!enable_hw_timestamping(interface_.c_str())) {
-        std::cout << "[RECV] Hardware timestamping not available, will use software timestamps" << std::endl;
-    }
-
-    // Increase receive buffer to handle high packet rates
-    int rcvbuf = 8 * 1024 * 1024;  // 8MB
-    if (setsockopt(sock_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
-        std::cerr << "[RECV] Warning: Failed to increase receive buffer: " << strerror(errno) << std::endl;
-    }
-
-    // Enable auxiliary data to receive VLAN information
-    int val = 1;
-    if (setsockopt(sock_, SOL_PACKET, PACKET_AUXDATA, &val, sizeof(val)) < 0) {
-        std::cerr << "[RECV] Warning: Failed to enable PACKET_AUXDATA: " << strerror(errno) << std::endl;
-    }
-
-    // Enable receive timestamping (both hardware and software)
-    int timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_SOFTWARE |
-                             SOF_TIMESTAMPING_RAW_HARDWARE;
-    if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
-        std::cerr << "[RECV] Warning: Failed to enable HW timestamping: " << strerror(errno) << std::endl;
-        // Try software-only as fallback
-        timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
-        if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
-            std::cerr << "[RECV] Warning: Failed to enable SW timestamping: " << strerror(errno) << std::endl;
-        } else {
-            std::cout << "[RECV] RX timestamping enabled (SW only)" << std::endl;
+    if (enable_timestamps_) {
+        // Enable hardware timestamping on the interface (non-fatal if it fails)
+        if (!enable_hw_timestamping(interface_.c_str())) {
+            std::cout << "[RECV] Hardware timestamping not available, will use software timestamps" << std::endl;
         }
-    } else {
-        std::cout << "[RECV] RX timestamping enabled (HW+SW)" << std::endl;
-    }
 
-    // Note: BPF filter disabled on this platform due to compatibility issues
-    // Packets are filtered by source_id in post-processing instead
-    std::cout << "[RECV] Note: BPF MAC filtering disabled (filter by source_id in CSV output)" << std::endl;
+        // Increase receive buffer to handle high packet rates
+        int rcvbuf = 8 * 1024 * 1024;  // 8MB
+        if (setsockopt(sock_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+            std::cerr << "[RECV] Warning: Failed to increase receive buffer: " << strerror(errno) << std::endl;
+        }
+
+        // Enable auxiliary data to receive VLAN information
+        int val = 1;
+        if (setsockopt(sock_, SOL_PACKET, PACKET_AUXDATA, &val, sizeof(val)) < 0) {
+            std::cerr << "[RECV] Warning: Failed to enable PACKET_AUXDATA: " << strerror(errno) << std::endl;
+        }
+
+        // Enable receive timestamping (both hardware and software)
+        int timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_RX_HARDWARE |
+                                 SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
+        if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
+            std::cerr << "[RECV] Warning: Failed to enable HW timestamping: " << strerror(errno) << std::endl;
+            // Try software-only as fallback
+            timestamping_flags = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
+            if (setsockopt(sock_, SOL_SOCKET, SO_TIMESTAMPING, &timestamping_flags, sizeof(timestamping_flags)) < 0) {
+                std::cerr << "[RECV] Warning: Failed to enable SW timestamping: " << strerror(errno) << std::endl;
+            } else {
+                std::cout << "[RECV] RX timestamping enabled (SW only)" << std::endl;
+            }
+        } else {
+            std::cout << "[RECV] RX timestamping enabled (HW+SW)" << std::endl;
+        }
+
+        // Note: BPF filter disabled on this platform due to compatibility issues
+        // Packets are filtered by source_id in post-processing instead
+        std::cout << "[RECV] Note: BPF MAC filtering disabled (filter by source_id in CSV output)" << std::endl;
+    } else {
+        std::cout << "[RECV] RX timestamping disabled" << std::endl;
+    }
 
     // Set read timeout to 100ms for more responsive timeout checking
     struct timeval tv;
@@ -138,24 +142,36 @@ int PacketReceiver::receive(int duration_ms) {
             struct timespec rx_timestamp_sw = {0, 0};
             struct timespec rx_timestamp_hw = {0, 0};
 
-            for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-                if (cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
-                    struct tpacket_auxdata* aux = (struct tpacket_auxdata*)CMSG_DATA(cmsg);
-                    if (aux->tp_vlan_tci != 0 || aux->tp_status & TP_STATUS_VLAN_VALID) {
-                        vlan_stripped = true;
-                    }
-                } else if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPING) {
-                    struct timespec* ts_array = (struct timespec*)CMSG_DATA(cmsg);
-                    // ts_array[0] = software timestamp
-                    // ts_array[1] = hardware timestamp (deprecated)
-                    // ts_array[2] = hardware timestamp (raw)
+            if (enable_timestamps_) {
+                for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                    if (cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
+                        struct tpacket_auxdata* aux = (struct tpacket_auxdata*)CMSG_DATA(cmsg);
+                        if (aux->tp_vlan_tci != 0 || aux->tp_status & TP_STATUS_VLAN_VALID) {
+                            vlan_stripped = true;
+                        }
+                    } else if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPING) {
+                        struct timespec* ts_array = (struct timespec*)CMSG_DATA(cmsg);
+                        // ts_array[0] = software timestamp
+                        // ts_array[1] = hardware timestamp (deprecated)
+                        // ts_array[2] = hardware timestamp (raw)
 
-                    if (ts_array[2].tv_sec != 0 || ts_array[2].tv_nsec != 0) {
-                        rx_timestamp_hw = ts_array[2];
-                        has_rx_timestamp = true;
-                    } else if (ts_array[0].tv_sec != 0 || ts_array[0].tv_nsec != 0) {
-                        rx_timestamp_sw = ts_array[0];
-                        has_rx_timestamp = true;
+                        if (ts_array[2].tv_sec != 0 || ts_array[2].tv_nsec != 0) {
+                            rx_timestamp_hw = ts_array[2];
+                            has_rx_timestamp = true;
+                        } else if (ts_array[0].tv_sec != 0 || ts_array[0].tv_nsec != 0) {
+                            rx_timestamp_sw = ts_array[0];
+                            has_rx_timestamp = true;
+                        }
+                    }
+                }
+            } else {
+                // Even with timestamps disabled, we still need to check for VLAN stripping
+                for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                    if (cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
+                        struct tpacket_auxdata* aux = (struct tpacket_auxdata*)CMSG_DATA(cmsg);
+                        if (aux->tp_vlan_tci != 0 || aux->tp_status & TP_STATUS_VLAN_VALID) {
+                            vlan_stripped = true;
+                        }
                     }
                 }
             }
@@ -194,8 +210,8 @@ int PacketReceiver::receive(int duration_ms) {
             }
 
             if (valid_packet) {
-                // Store RX timestamp
-                if (has_rx_timestamp) {
+                // Store RX timestamp if enabled
+                if (enable_timestamps_ && has_rx_timestamp) {
                     PacketTimestamp ts;
                     ts.sequence_number = seq_num;
                     ts.source_id = src_id;

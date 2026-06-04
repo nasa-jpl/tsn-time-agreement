@@ -1,0 +1,227 @@
+= Traffic Generator
+:toc:
+
+A simple network traffic generator for TSN testing. This tool uses the shared `PacketSender` class from `tools/common/` to generate VLAN-tagged Ethernet frames at a specified rate.
+
+== Features
+
+* Send VLAN-tagged Ethernet frames (802.1Q)
+* Configurable packet rate (packets per second)
+* Configurable socket priority (SO_PRIORITY) for QoS testing
+* Continuous or fixed-count packet generation
+* Uses custom EtherType 0x88BF
+* Timestamps disabled for performance (pure traffic generation)
+
+== Building
+
+[source,bash]
+----
+mkdir -p build && cd build
+cmake ..
+make
+----
+
+== Usage
+
+[source,bash]
+----
+sudo ./traffic_generator <interface> --source-id <id> [options]
+----
+
+=== Required Arguments
+
+* `<interface>` or `-i, --interface`: Network interface to send packets from
+* `--source-id <id>`: Source ID to embed in packet payload (used to identify the sender)
+
+=== Optional Arguments
+
+* `-d, --dest-mac <mac>`: Destination MAC address (default: `ff:ff:ff:ff:ff:ff` broadcast)
+* `-v, --vlan-id <id>`: VLAN ID from 1-4095 (default: 10)
+* `-c, --count <n>`: Number of packets to send, 0 for infinite (default: 0)
+* `-r, --rate <pps>`: Packet rate in packets per second (default: 50)
+* `-p, --priority <0-7>`: Socket priority (SO_PRIORITY) for QoS (default: 0)
+* `--txtime`: Enable SO_TXTIME for scheduled packet transmission
+* `--txtime-clock <id>`: Clock ID for SO_TXTIME (1=MONOTONIC, 11=TAI) (default: 1)
+* `--timestamps`: Enable TX timestamp collection (requires fixed count, not infinite)
+* `-o, --output <file>`: CSV file to write TX timestamp data
+* `-h, --help`: Print usage information
+
+== Examples
+
+=== Basic Usage
+
+Send 50 packets per second indefinitely:
+
+[source,bash]
+----
+sudo ./traffic_generator eth0 --source-id 1
+----
+
+=== High-Rate Traffic
+
+Send 1000 packets per second with priority 3:
+
+[source,bash]
+----
+sudo ./traffic_generator -i eth0 --source-id 1 -r 1000 -p 3
+----
+
+=== Fixed Count
+
+Send exactly 10,000 packets at 100 pps:
+
+[source,bash]
+----
+sudo ./traffic_generator eth0 --source-id 1 -c 10000 -r 100
+----
+
+=== Different VLAN
+
+Send to VLAN 100 with unicast MAC:
+
+[source,bash]
+----
+sudo ./traffic_generator eth0 --source-id 1 -v 100 -d 00:11:22:33:44:55
+----
+
+=== With Timestamp Collection
+
+Send 1000 packets and collect TX timestamps to CSV:
+
+[source,bash]
+----
+sudo ./traffic_generator eth0 --source-id 1 -c 1000 -r 100 --timestamps -o tx_timestamps.csv
+----
+
+This captures hardware timestamps showing exactly when each packet was transmitted by the NIC, useful for verifying gate schedules and SO_TXTIME behavior.
+
+=== Using SO_TXTIME
+
+Send packets with SO_TXTIME scheduling:
+
+[source,bash]
+----
+sudo ./traffic_generator eth0 --source-id 1 -c 100 -r 50 --txtime --txtime-clock 0
+----
+
+NOTE: SO_TXTIME requires the NIC's PHC to be synchronized with the system clock. See the main documentation for phc2sys setup.
+
+== Socket Priority (SO_PRIORITY)
+
+The `-p, --priority` option sets the Linux SO_PRIORITY socket option, which affects:
+
+* Packet queuing in the kernel network stack
+* QoS classification on network interfaces
+* Mapping to VLAN PCP (Priority Code Point) on egress (if configured)
+
+Valid values are 0-7:
+
+* 0 = Best effort (default)
+* 1-7 = Higher priority (implementation-dependent)
+
+NOTE: The actual effect depends on your network interface driver and QoS configuration.
+
+== Notes
+
+* **Root privileges required**: Raw socket access requires sudo
+* **Rate limiting**: Maximum effective rate is 1000 pps due to 1ms minimum interval
+* **Timestamp collection**: Disabled by default for performance; enable with `--timestamps`
+* **Timestamps with infinite count**: Cannot use `--timestamps` with count=0 (infinite mode)
+* **EtherType**: Fixed at 0x88BF (not configurable)
+* **VLAN tagging**: Always enabled, cannot be disabled
+
+== Packet Format
+
+All packets follow this format:
+
+----
++----------------+
+| Ethernet Hdr   | (14 bytes: dst MAC + src MAC + TPID)
++----------------+
+| VLAN Tag       | (4 bytes: TPID 0x8100 + TCI)
++----------------+
+| EtherType      | (2 bytes: 0x88BF)
++----------------+
+| Sequence #     | (4 bytes)
++----------------+
+| Source ID      | (4 bytes)
++----------------+
+| Timestamp      | (8 bytes)
++----------------+
+| Payload        | (60 bytes padding)
++----------------+
+Total: 94 bytes
+----
+
+== TX Timestamp Collection
+
+Enable timestamp collection with `--timestamps` to capture hardware/software timestamps for each transmitted packet:
+
+[source,bash]
+----
+sudo ./traffic_generator eth0 --source-id 1 -c 100 -r 50 --timestamps -o timestamps.csv
+----
+
+=== CSV Output Format
+
+The output CSV contains the following columns:
+
+* `direction`: Always "TX" for traffic generator
+* `interface`: The network interface used
+* `sequence_number`: Packet sequence number (0-indexed)
+* `source_id`: The source ID specified
+* `timestamp_sec`: Timestamp seconds
+* `timestamp_nsec`: Timestamp nanoseconds
+* `type`: "HW" (hardware) or "SW" (software) timestamp
+
+=== Use Cases for Timestamps
+
+**Verify Hardware Offload Gating:**
+
+When using taprio with hardware offload (`flags 0x2`), hardware TX timestamps show when packets actually left the NIC. Compare with expected gate schedule to verify gating is working:
+
+[source,bash]
+----
+# Send with priority 2, which uses queue 1
+sudo ./traffic_generator eth0 --source-id 1 -c 50 -r 10 -p 2 --timestamps -o tx.csv
+
+# Analyze timestamps - look for gaps/bursts matching gate schedule
+# Queue 1 open:  0-500ms   → timestamps at 0, 100, 200, 300, 400ms
+# Queue 1 closed: 500-1000ms → NO timestamps (packets held)
+# Queue 1 open:  1000-1500ms → burst at 1000ms, then 1100, 1200ms...
+----
+
+**Verify SO_TXTIME:**
+
+With SO_TXTIME enabled, hardware timestamps confirm packets were transmitted at scheduled times:
+
+[source,bash]
+----
+sudo ./traffic_generator eth0 --source-id 1 -c 100 -r 50 --txtime --timestamps -o txtime.csv
+
+# Hardware timestamps should match SO_TXTIME scheduled times exactly
+----
+
+**Measure Jitter:**
+
+Timestamps show actual transmission intervals vs expected:
+
+----
+Expected: Every 20ms (50 pps)
+Actual HW timestamps show: 19.8ms, 20.2ms, 19.9ms, 20.1ms → ~200µs jitter
+----
+
+NOTE: Hardware timestamps (`HW`) are only available if your NIC supports hardware timestamping. Software timestamps (`SW`) are always available but less precise (~microsecond vs nanosecond accuracy).
+
+== Use Cases
+
+* **Traffic generation**: Generate background traffic for network testing
+* **QoS testing**: Test priority queue behavior with different SO_PRIORITY values
+* **Load testing**: Generate high packet rates to test switch/NIC performance
+* **Bandwidth testing**: Measure network capacity with sustained traffic
+* **Multicast testing**: Send to multicast MAC addresses
+
+== See Also
+
+* `packet_latency_measurement`: For measuring end-to-end latency with timestamps
+* `tools/common/`: Shared packet sending/receiving classes
